@@ -1,0 +1,27 @@
+Deliverables
+
+- A git with working codes or notebook (commented and explained)
+- A video clip of a demo(s) - either .mp4 YouTube link, unlisted, or transformed to .gif image (you can leave those links in the report or embed in the notebook)
+
+- Report with following contents (no page limit):
+  - Short overview of what your project is about (e.g. you're building /testing certain RL models in certain environments; yes you can test your algorithm in more than 1 environment if your goal is to test an algorithm(s) performances in different settings)
+  - Approach: Explain your environment, your choice of model(s), the methods and purpose of testing and experiments, explain any trouble shooting required.
+  - Results: Show the results and interpretation of your experiment. Any iterative improvements summary.
+  - Conclusion, discussion, reflection, or suggestions for future improvements or future ideas.
+  - References: Please include all relevant links (git, video, etc)
+
+
+Evaluation Rubric (total 40 pts)
+
+- Does it include a clear overview on what the project is about? (4)
+- Does it explain how the environment works and what the game rules are? (4)
+- Does it explain clearly the model(s) of choices, the methods and purpose of tests and experiments? (7)
+- Does it show problem solving procedure- e.g. how the author solved and improved when an algorithm doesn't work well. Note that it's not about debugging or programming/implementation, but about when a correctly implemented algorithm wasn't enough for the problem and the author had to modify/add some features or techniques, or compare with another model, etc. (7)
+- Does it include the results summary, interpretation of experiments and visualization (e.g. performance comparison table, graphs etc)? (7)
+- Does it include discussion (what went well or not and why), and suggestions for improvements or future work? (5)
+- Does it include all deliverables? (3)
+  - Git with codes or notebooks
+  - Writeup (you can consider notebook as a writeup if the notebook contains all needed contents and explanation)
+  - Demo clips
+  - Proper quote or reference
+- Is the writeup well organized overall? Overall writeup quality. (3)
