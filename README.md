@@ -58,3 +58,39 @@ the network without encryption and should not be used on an untrusted network.
 
 The monitor refreshes queue statistics and the `ether5` transmit rate once per
 second. Press Ctrl+C to exit.
+
+## RouterOS queue profile controller
+
+`profile_controller.py` applies predefined committed-rate profiles to the
+`qos-high`, `qos-medium`, and `qos-low` Queue Tree entries. It changes only each
+queue's `limit-at` value; it does not make automatic decisions or use
+reinforcement learning yet.
+
+| Profile | qos-high | qos-medium | qos-low |
+| --- | ---: | ---: | ---: |
+| `balanced` | 1M | 1M | 1M |
+| `protected` | 1250k | 1250k | 250k |
+| `maximum_protection` | 1500k | 1500k | 100k |
+
+Use the same RouterOS REST connection variables as the monitor, but provide an
+account with permission to read and write the queue tree:
+
+```bash
+export MIKROTIK_USER='controller'
+export MIKROTIK_PASSWORD='your-password'
+python3 profile_controller.py protected
+```
+
+The router defaults to `192.168.88.34` on HTTP port 80 and can be overridden
+with `MIKROTIK_HOST` and `MIKROTIK_REST_PORT`. The controller first verifies
+that all three required queues exist, then updates them using their RouterOS
+resource IDs. The same plain-HTTP lab-network warning described for the monitor
+applies to this tool.
+
+The controller can also be imported by later experiment code:
+
+```python
+from profile_controller import set_profile
+
+set_profile("maximum_protection")
+```

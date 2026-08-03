@@ -108,6 +108,37 @@ messages.
 
 Python syntax checks passed. Live router testing remains to be completed.
 
+## 2026-08-03 - Queue profile controller added
+
+Added `profile_controller.py` to verify that Python can control the RouterOS
+Queue Tree before adding automatic profile selection or reinforcement learning.
+The controller uses the same REST login procedure and environment variables as
+`monitor.py`, while requiring an account with queue read and write permissions.
+
+The public `set_profile()` function supports three fixed profiles and changes
+the `limit-at` values on `qos-high`, `qos-medium`, and `qos-low`:
+
+| Profile | High | Medium | Low |
+| --- | ---: | ---: | ---: |
+| `balanced` | 1M | 1M | 1M |
+| `protected` | 1250k | 1250k | 250k |
+| `maximum_protection` | 1500k | 1500k | 100k |
+
+The controller validates the requested profile and confirms that all required
+queues exist before sending updates. Live testing exposed an HTTP 400 error
+when the leading `*` in a RouterOS resource ID was URL-encoded. Keeping IDs such
+as `*1000002` literal in the REST path fixed the request.
+
+Tested `set_profile("balanced")` against the router and verified that all three
+queues reported `limit-at=1000000`. The test then successfully restored the
+original values. Python compilation and formatting checks also passed.
+
+### Next steps
+
+- Use the controller during repeatable static-profile network tests.
+- Keep automatic decisions and reinforcement learning separate until profile
+  switching and measurements are validated together.
+
 ## Entry template
 
 ```markdown
