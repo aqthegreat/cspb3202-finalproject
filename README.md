@@ -17,9 +17,11 @@ traffic.
 
 ## Status
 
-The project is in its initial documentation and design phase. The problem and
-high-level objective have been defined; the experimental environment, RL
-formulation, and evaluation plan remain to be documented and implemented.
+The RouterOS traffic classification, Queue Tree, traffic-generation scripts,
+live statistics monitor, predefined profile controller, and static controller
+baseline are implemented. The complete latency and packet-loss measurement
+path, reward calculation, Q-learning agent, and comparative experiments remain
+to be implemented.
 
 ## Router configuration backups
 

@@ -19,39 +19,53 @@ lower-priority traffic.
 
 ### Hardware and software
 
-The experimental environment consists of two computers connected through a
-MikroTik router. PC1 generates the test traffic and runs the RL agent. PC2
-receives the traffic and provides the destination-side measurements used to
-evaluate network performance. The router runs MikroTik RouterOS 7.23.2 and
-applies the QoS configuration selected by the agent.
+The experimental environment consists of two traffic computers connected
+through a MikroTik router and a separate Windows laptop that runs the controller
+inside Ubuntu on Windows Subsystem for Linux (WSL). PC1 only generates test
+traffic, and PC2 only receives it. The controller laptop reads measurements and
+changes the router profile but is not a source or destination for experiment
+traffic. The router runs MikroTik RouterOS 7.23.2 and applies the QoS
+configuration selected by the agent.
 
 | Component | Role | Operating system / version |
 | --- | --- | --- |
-| PC1 | Traffic generator and RL agent | Xubuntu 26.04 |
+| PC1 | Traffic generator | Xubuntu 26.04 |
 | MikroTik router | Routing, traffic classification, and QoS enforcement | RouterOS 7.23.2 |
-| PC2 | Traffic receiver and performance measurement | Xubuntu 26.04 |
+| PC2 | Traffic receiver | Xubuntu 26.04 |
+| Controller laptop | Static controller and RL agent | Ubuntu on Windows WSL |
 
-The MikroTik router model and the relevant hardware specifications of both PCs
-will be recorded before the experiments so that the environment can be
-reproduced.
+The MikroTik router model and the relevant hardware specifications of the
+traffic computers and controller laptop will be recorded before the experiments
+so that the environment can be reproduced.
 
 ### Network topology
 
 ```text
-PC1: Traffic Generator / RL Agent
-                 |
-                 v
-MikroTik Router: RouterOS 7.23.2
-                 |
-                 v
-PC2: Traffic Receiver / Measurement
+Experiment traffic path:
+
+nuc34: Traffic Generator (192.168.4.2)
+          |
+          v
+MikroTik Router (Management - 192.168.88.34)
+          |
+          v
+nuc42: Traffic Receiver (192.168.5.2)
+
+Management and control path:
+
+Windows WSL/Ubuntu: Controller/RL Agent
+          |
+          | statistics and profile commands
+          v
+MikroTik Router: RouterOS REST API
 ```
 
 All experiment traffic travels from PC1 to PC2 through the MikroTik router.
 This makes the router the controlled bottleneck and allows its QoS policy to
-determine how available bandwidth is shared among traffic classes. The exact
-link speeds and configured bottleneck rate will be documented with the final
-test configuration.
+determine how available bandwidth is shared among traffic classes. The separate
+controller laptop communicates with the router over its management path and
+does not carry the generated test traffic. The exact link speeds and configured
+bottleneck rate will be documented with the final test configuration.
 
 ### Traffic classes
 
@@ -81,17 +95,22 @@ applied to the MikroTik router. After the network runs under the selected
 configuration for the next measurement interval, the environment calculates a
 reward and supplies a new observation.
 
-An experiment episode consists of repeated observation, action, measurement,
-and reward steps under a defined traffic scenario. The agent's goal is to earn
-a higher cumulative reward by reducing loss and latency for high-priority
-traffic while retaining as much low-priority throughput as possible. The
-specific rules are defined in the following section.
+The controller operates continuously through repeated observation, action,
+measurement, and reward steps under a defined traffic scenario. The agent's
+goal is to earn a higher cumulative reward by reducing loss and latency for
+high-priority traffic while retaining as much low-priority throughput as
+possible. The specific rules are defined in the following section.
+
+This describes the intended complete RL environment. The current monitoring
+implementation collects Queue Tree statistics and the `ether5` transmit rate.
+Per-class latency and packet-loss measurements still need to be integrated
+before the full state and reward can be calculated.
 
 ## Reinforcement Learning Environment
 
 The network experiment is modeled as a reinforcement learning environment.
 Although it is not a graphical game, it has the same core elements: a state,
-an available set of actions, a reward, and a condition that ends each episode.
+an available set of actions, a reward, and a transition to the next state.
 
 ### State
 
@@ -118,8 +137,17 @@ profiles prevents the agent from applying arbitrary or invalid RouterOS
 settings. Selecting the profile that is already active is allowed and leaves
 the configuration unchanged.
 
-The exact profiles and their queue parameters will be documented after they are
-finalized.
+The action space currently contains three profiles. Each action changes the
+`limit-at` value for the three child queues while leaving the Queue Tree
+structure and maximum limits unchanged.
+
+| Profile | `qos-high` | `qos-medium` | `qos-low` |
+| --- | ---: | ---: | ---: |
+| `balanced` | 1M | 1M | 1M |
+| `protected` | 1250k | 1250k | 250k |
+| `maximum_protection` | 1500k | 1500k | 100k |
+
+**NOTE**: The above profiles may change over time to make the changes more obvious.
 
 ### Reward
 
@@ -136,22 +164,26 @@ behavior. The performance terms will be weighted so that high-priority traffic
 receives the strongest protection while throughput for lower-priority traffic
 is still rewarded. The final equation, term weights, measurement units, and
 normalization method will be recorded before training and adjusted only through
-documented experiments.
+documented experiments. The small penalty when changing is because in testing,
+it was observed that traffic was temporary unlimited, which could be bad.
 
-### Episode and decision interval
+### Decision interval and experiment duration
 
-Each episode lasts 300 seconds. The agent chooses an action every 5 seconds, so
-a complete episode contains 60 decision steps. During each step, the selected
-profile is applied and traffic runs for the decision interval before the next
-state and reward are calculated.
+The controller takes a new reading and chooses an action every five seconds.
+Each reading, action, reward, and following reading forms one transition that
+can be used immediately for a Q-learning update. The agent does not need to wait
+for an average over five minutes before making a decision.
 
-### Termination
+The network-control task can run continuously and does not require a fixed
+episode length for Q-learning to operate. Controlled experiments may still use
+a fixed duration so static profiles and learning agents can be compared over
+equal traffic workloads. If five-minute runs are used, they will be evaluation
+windows containing 60 separate decisions rather than one averaged observation.
 
-An episode terminates normally after 300 seconds. An episode may also terminate
-early if the environment cannot safely continue, such as when communication
-with the router or measurement process fails. Early termination will be logged
-and distinguished from a completed episode so that incomplete data is not
-treated as a valid performance result.
+The controller stops when the operator ends the experiment or when it cannot
+safely continue, such as after a router communication or measurement failure.
+Interrupted runs will be logged and distinguished from completed evaluation
+runs so incomplete data is not treated as a valid comparison.
 
 ## Initial Design Decisions
 
@@ -180,3 +212,67 @@ easier to interpret when results are analyzed.
 Keeping both decisions fixed ensures that later experiments evaluate changes
 to the learning method or reward design under a consistent traffic
 classification and action structure.
+
+## Implementation and Static Baseline
+
+The initial measurement-and-control path was implemented before adding a
+learning agent. This separates RouterOS integration problems from later RL
+design and provides a simple baseline for comparison.
+
+### Router and traffic configuration
+
+The router currently uses a 20 Mbps parent queue on `ether5` with three child
+queues named `qos-high`, `qos-medium`, and `qos-low`. RouterOS mangle rules
+classify packets marked with DSCP 46, 26, and 0 into the high-, medium-, and
+low-priority queues. Traffic-generation scripts start `iperf3` servers and
+clients for repeatable testing of the three classes.
+
+### Monitoring
+
+`monitor.py` connects to the RouterOS REST API and retrieves Queue Tree data for
+the parent and three child queues. It displays current rate, packets, bytes,
+drops, queued traffic, committed rate, and maximum rate. It also retrieves the
+transmit rate for `ether5`. The display refreshes once per second when the
+monitor is run by itself.
+
+This monitoring is sufficient to verify queue classification, traffic rates,
+and profile changes. It does not yet provide all values planned for the RL
+state, particularly per-class latency and packet loss.
+
+### Profile control
+
+`profile_controller.py` provides `set_profile()`, which accepts one of the three
+predefined profile names. It first verifies that all required queues exist and
+then updates their `limit-at` values through the RouterOS REST API. Restricting
+the function to predefined profiles prevents the controller from generating
+arbitrary Queue Tree settings.
+
+Live testing initially produced an HTTP 400 response even though reading the
+queue configuration worked. The failure was traced to URL-encoding the leading
+`*` in RouterOS resource identifiers. For example, RouterOS accepted
+`*1000002` in the REST path but rejected `%2A1000002` as an invalid resource
+identifier. Keeping the identifier literal fixed the update request.
+
+The `balanced` profile was applied during validation, and all three queues
+reported a committed rate of 1 Mbps. Their original values were then restored
+successfully.
+
+### Static controller
+
+`run_controller.py` integrates monitoring and profile control. Its
+`StaticController` always returns the profile selected when the program starts;
+it does not inspect the statistics when choosing an action. Every five seconds,
+the runner retrieves current statistics, obtains the fixed profile from the
+controller, applies it, and prints the selected profile and current traffic
+rates.
+
+The static controller was tested against the router and successfully collected
+statistics while applying the configured profile every five seconds. This
+confirms that the observation, action-selection, and RouterOS control path can
+operate together before Q-learning is introduced.
+
+The same static controller will serve as a baseline during experiments. Its
+performance under each fixed profile can be compared with the Q-learning
+agent's performance under identical traffic scenarios. This will show whether
+dynamic profile selection improves results beyond simply choosing one fixed
+configuration.
