@@ -94,3 +94,21 @@ from profile_controller import set_profile
 
 set_profile("maximum_protection")
 ```
+
+## Static controller runner
+
+`run_controller.py` connects monitoring and profile control in one loop. Its
+`StaticController` polls the current queue and `ether5` transmit statistics,
+always selects the profile supplied on the command line, applies that profile,
+and prints a compact status line. It does not make decisions from the observed
+statistics yet, so it provides a simple baseline for validating the complete
+measurement-and-control path.
+
+```bash
+python3 run_controller.py balanced
+python3 run_controller.py protected --interval 10
+```
+
+The default interval is five seconds. The same RouterOS environment variables
+and read/write permissions required by `profile_controller.py` apply. Press
+Ctrl+C to stop the loop.

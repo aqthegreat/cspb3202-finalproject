@@ -139,6 +139,33 @@ original values. Python compilation and formatting checks also passed.
 - Keep automatic decisions and reinforcement learning separate until profile
   switching and measurements are validated together.
 
+## 2026-08-04 - Static controller loop added
+
+Added `run_controller.py` to integrate the existing observation and control
+paths. `StaticController` accepts one predefined profile and returns it for
+every observation without inspecting or reacting to the statistics. The runner
+calls `monitor.get_stats()`, asks the controller for its fixed profile, applies
+it through `profile_controller.set_profile()`, and repeats every five seconds by
+default.
+
+The command-line interface accepts any profile defined in
+`profile_controller.PROFILES` and an optional positive `--interval`. Each
+iteration prints the selected profile, `ether5` transmit rate, and the current
+rate for each child queue. Ctrl+C stops the loop.
+
+A single-iteration test confirmed that the controller selected and applied the
+configured profile while consuming the monitor's existing return format.
+
+I tested it against the router and everything looked great. Statistics were
+collected and displayed and applied the statically assigned profile every 5
+seconds.
+
+### Next steps
+
+- Run the static controller with each profile during controlled traffic tests.
+- Record observations and outcomes before implementing dynamic selection.
+- Keep the same controller interface for later baseline and learning agents.
+
 ## Entry template
 
 ```markdown
