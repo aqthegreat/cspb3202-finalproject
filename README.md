@@ -40,6 +40,40 @@ The defaults are router `192.168.88.34`, user `backup`, SSH port `22`, and key
 `~/.ssh/mikrotik_backup`. Run `scripts/backup_router.sh --help` to see how to
 override them using arguments or environment variables.
 
+## iperf3 traffic generation
+
+On the receiving host, start the iperf3 servers:
+
+```bash
+scripts/start_iperf3_servers.sh
+```
+
+On the sending host, select a traffic profile and provide the receiving host's
+address:
+
+```bash
+scripts/start_iperf3_clients.sh SERVER_HOST open
+scripts/start_iperf3_clients.sh SERVER_HOST minor
+scripts/start_iperf3_clients.sh SERVER_HOST moderate
+scripts/start_iperf3_clients.sh SERVER_HOST major
+```
+
+Each profile sets the target bandwidth for the high-, medium-, and low-priority
+streams, in that order:
+
+| Profile | High (DSCP 46) | Medium (DSCP 26) | Low (DSCP 0) | Total offered load |
+| --- | ---: | ---: | ---: | ---: |
+| `open` (`0`) | 0 | 0 | 20M | 20M |
+| `minor` (`1`) | 500K | 500K | 20M | 21M |
+| `moderate` (`2`) | 1M | 1M | 20M | 22M |
+| `major` (`3`) | 2M | 2M | 20M | 24M |
+
+The `open` profile establishes the wide-open baseline with only default DSCP 0
+traffic. The other profiles add progressively more prioritized traffic to
+create increasing congestion against the router's 20 Mbps parent queue. A
+stream with a bandwidth of zero is not launched. Profile numbers `0` through
+`3` can be used in place of the names, and each run lasts 60 seconds.
+
 ## Live RouterOS queue monitor
 
 Install the display dependency, set the RouterOS REST credentials, and start

@@ -81,8 +81,9 @@ rates.
 Added two traffic scripts:
 
 - `scripts/start_iperf3_servers.sh` starts servers on ports 5201-5205.
-- `scripts/start_iperf3_clients.sh` starts three 60-second clients on ports
-  5201-5203 with DSCP values 0, 26, and 46.
+- `scripts/start_iperf3_clients.sh` starts 60-second clients on ports 5201-5203
+  with DSCP values 0, 26, and 46. The number of active clients and their target
+  rates are selected by a traffic profile.
 
 Both scripts passed Bash syntax checks and clean up their processes when
 stopped.
@@ -165,6 +166,34 @@ seconds.
 - Run the static controller with each profile during controlled traffic tests.
 - Record observations and outcomes before implementing dynamic selection.
 - Keep the same controller interface for later baseline and learning agents.
+
+## 2026-08-04 - Traffic-generation profiles added
+
+Updated `scripts/start_iperf3_clients.sh` to accept a required traffic profile
+after the server address. The profiles define bandwidths in high-, medium-, and
+low-priority order:
+
+| Profile | High (DSCP 46) | Medium (DSCP 26) | Low (DSCP 0) | Total offered load |
+| --- | ---: | ---: | ---: | ---: |
+| `open` (`0`) | 0 | 0 | 20M | 20M |
+| `minor` (`1`) | 500K | 500K | 20M | 21M |
+| `moderate` (`2`) | 1M | 1M | 20M | 22M |
+| `major` (`3`) | 2M | 2M | 20M | 24M |
+
+The `open` profile provides a wide-open baseline with only default DSCP 0
+traffic. The remaining profiles progressively add high- and medium-priority
+load above the 20 Mbps parent-queue capacity to demonstrate increasing
+congestion. Streams assigned zero bandwidth are skipped rather than launched.
+Names and numeric aliases are both accepted; for example:
+
+```bash
+scripts/start_iperf3_clients.sh SERVER_HOST minor
+scripts/start_iperf3_clients.sh SERVER_HOST 3
+```
+
+Bash syntax, argument validation, and the generated iperf3 command lines were
+checked without sending live traffic. A subsequent live run confirmed that the
+profiles worked as intended.
 
 ## Entry template
 
