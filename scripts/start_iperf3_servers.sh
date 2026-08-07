@@ -22,7 +22,9 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 for (( port = START_PORT; port <= END_PORT; port++ )); do
-    printf 'Starting iperf3 server on port %d...\n' "$port"
+    # iperf3 has no separate UDP server flag. The normal server accepts the TCP
+    # control connection and receives UDP test traffic requested by the client.
+    printf 'Starting UDP-capable iperf3 server on port %d...\n' "$port"
     iperf3 --server --port "$port" &
     pids+=("$!")
 done

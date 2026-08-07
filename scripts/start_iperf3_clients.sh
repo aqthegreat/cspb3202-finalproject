@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 usage() {
     printf 'Usage: %s SERVER_HOST PROFILE\n' "${0##*/}"
-    printf 'Start a 60-second iperf3 traffic profile.\n\n'
+    printf 'Start a 60-second UDP iperf3 traffic profile.\n\n'
     printf 'PROFILE sets the high/medium/low DSCP bandwidths:\n'
     printf '  open     (or 0)  0,    0,    20M\n'
     printf '  minor    (or 1)  500K, 500K, 20M\n'
@@ -91,10 +91,10 @@ for index in "${!PORTS[@]}"; do
         continue
     fi
 
-    printf 'Starting %s-priority client to %s:%d with DSCP %d at %s for %d seconds...\n' \
+    printf 'Starting UDP %s-priority client to %s:%d with DSCP %d at %s for %d seconds...\n' \
         "$class_name" "$SERVER_HOST" "$port" "$dscp" "$bandwidth" "$DURATION"
     iperf3 --client "$SERVER_HOST" --port "$port" \
-        --dscp "$dscp" --bitrate "$bandwidth" --time "$DURATION" &
+        --udp --dscp "$dscp" --bitrate "$bandwidth" --time "$DURATION" &
     pids+=("$!")
 done
 

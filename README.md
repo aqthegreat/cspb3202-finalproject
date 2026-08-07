@@ -18,10 +18,11 @@ traffic.
 ## Status
 
 The RouterOS traffic classification, Queue Tree, traffic-generation scripts,
-live statistics monitor, predefined profile controller, and static controller
-baseline are implemented. The complete latency and packet-loss measurement
-path, reward calculation, Q-learning agent, and comparative experiments remain
-to be implemented.
+live statistics monitor, predefined profile controller, static controller
+baseline, and a minimal tabular Q-learning controller are implemented. The
+learning controller currently uses RouterOS queue rates and drop counters;
+latency measurements, persistent experiment logging, and comparative
+experiments remain to be implemented.
 
 ## Router configuration backups
 
@@ -59,7 +60,8 @@ scripts/start_iperf3_clients.sh SERVER_HOST major
 ```
 
 Each profile sets the target bandwidth for the high-, medium-, and low-priority
-streams, in that order:
+UDP streams, in that order. UDP is used so the offered load remains fixed under
+congestion and packet drops remain directly observable.
 
 | Profile | High (DSCP 46) | Medium (DSCP 26) | Low (DSCP 0) | Total offered load |
 | --- | ---: | ---: | ---: | ---: |
@@ -131,20 +133,42 @@ from profile_controller import set_profile
 set_profile("maximum_protection")
 ```
 
-## Static controller runner
+## Controller runner
 
-`run_controller.py` connects monitoring and profile control in one loop. Its
-`StaticController` polls the current queue and `ether5` transmit statistics,
-always selects the profile supplied on the command line, applies that profile,
-and prints a compact status line. It does not make decisions from the observed
-statistics yet, so it provides a simple baseline for validating the complete
-measurement-and-control path.
+`run_controller.py` connects monitoring and profile control in one loop. The
+static controller always applies the requested profile. The Q-learning
+controller converts high-, medium-, and low-priority queue activity and new
+packet drops into a small discrete state, then learns which existing profile to
+apply using an in-memory Q-table.
+
+Each queue has one of three state values:
+
+| Value | Meaning |
+| ---: | --- |
+| `0` | Idle or nearly idle (at most 10 Kbps) |
+| `1` | Active with no new packet drops |
+| `2` | One or more new packet drops during the latest interval |
+
+The complete state is `(high, medium, low, current_profile)`. RouterOS drop
+counters are cumulative, so the controller remembers the previous reading and
+uses the difference for each interval. A counter that decreases is treated as
+a reset and does not create a negative drop count.
+
+Actions are the existing `balanced`, `protected`, and `maximum_protection`
+profiles. Selection is epsilon-greedy, with defaults of `alpha=0.2`,
+`gamma=0.9`, and `epsilon=0.2`. The reward prioritizes avoiding new high- and
+medium-priority drops, rewards high and medium rates at or above 900 Kbps,
+gives a small reward when low-priority traffic absorbs drops, and applies a
+small cost to `maximum_protection`.
 
 ```bash
-python3 run_controller.py balanced
-python3 run_controller.py protected --interval 10
+python3 run_controller.py --controller static --profile balanced
+python3 run_controller.py --controller static --profile protected --interval 10
+python3 run_controller.py --controller qlearning
 ```
 
-The default interval is five seconds. The same RouterOS environment variables
-and read/write permissions required by `profile_controller.py` apply. Press
-Ctrl+C to stop the loop.
+The default interval is five seconds. After each Q-learning step, the runner
+prints the state used for the decision, selected profile, reward, updated
+Q-value, and epsilon. Learning state is intentionally not persisted between
+runs. The same RouterOS environment variables and read/write permissions
+required by `profile_controller.py` apply. Press Ctrl+C to stop.

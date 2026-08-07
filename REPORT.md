@@ -78,7 +78,7 @@ DSCP values:
 - **Medium priority (DSCP 26):** interactive traffic with intermediate service
   requirements. It should receive reliable service without displacing the
   high-priority class.
-- **Low priority (DSCP 0):** bulk TCP traffic generated with `iperf3`. This
+- **Low priority (DSCP 0):** bulk UDP traffic generated with `iperf3`. This
   class can tolerate more delay, and the agent should maximize its usable
   throughput when doing so does not harm higher-priority traffic.
 
@@ -166,6 +166,77 @@ is still rewarded. The final equation, term weights, measurement units, and
 normalization method will be recorded before training and adjusted only through
 documented experiments. The small penalty when changing is because in testing,
 it was observed that traffic was temporary unlimited, which could be bad.
+
+The current implementation subtracts `0.5` whenever the selected profile is
+different from the profile recorded in the state. This makes a profile change
+worthwhile only when its expected performance improvement offsets the cost of
+reconfiguring the queues. An all-idle interval is handled separately: the agent
+selects `balanced` without exploration and receives a reward of zero, preventing
+idle time from producing misleading positive Q-values.
+
+### Preliminary Q-learning behavior
+
+An initial run containing only DSCP 0 traffic showed that `balanced` became the
+highest-valued action for the frequently observed state
+`(0, 0, 2, "balanced")`, but the controller still occasionally selected
+`protected` or `maximum_protection`. This behavior is consistent with the fixed
+exploration rate rather than evidence that the controller failed to learn.
+
+A Q-value estimates the discounted cumulative reward expected after selecting
+a particular profile in a particular state. It is not a probability or a
+single-interval score. The implementation updates it using
+
+```text
+Q(s, a) <- Q(s, a) + alpha * (reward + gamma * max Q(s', a') - Q(s, a))
+```
+
+where `alpha=0.2` and `gamma=0.9`. Consequently, a repeated reward near 10 can
+produce a long-run Q-value approaching `10 / (1 - 0.9) = 100`; observed values
+in the range of 20 to 30 are therefore plausible during learning.
+
+The epsilon-greedy policy uses `epsilon=0.2`. On 80% of non-idle decisions it
+chooses an action having the highest known Q-value, while on 20% it chooses
+uniformly from all three profiles. Even when `balanced` is best, exploration
+therefore has a `0.2 * 2/3`, or approximately 13.3%, chance of selecting a
+different profile. Equal Q-values for previously untried actions can cause
+additional random tie-breaking early in a run. The newly added switching
+penalty addresses unnecessary changes in the learned values; later experiments
+can evaluate whether epsilon should also decay after sufficient exploration.
+
+Subsequent multi-class tests showed that a fixed epsilon did not permit full
+convergence and that the original state mapped all queues with any new drops to
+the same status. The revised state retains coarse rate information when drops
+occur: status 2 represents up to 750 Kbps, status 3 represents up to 1.5 Mbps,
+and status 4 represents higher rates. This allows the agent to distinguish the
+high- and medium-priority offered loads in the minor, moderate, and major
+traffic profiles.
+
+The revised controller multiplies epsilon by `0.97` after each active decision
+and sets it to zero once it falls below `0.02`. It also retains the current
+profile when its Q-value is within `1.0` of the best action. Finally, a constant
+20-point offset was added to non-idle rewards. The offset prevents unseen
+actions, whose Q-values begin at zero, from always appearing preferable when
+every observed congestion reward is negative. Together, these changes are
+intended to provide an initial exploration period followed by a stable action;
+their network-performance effect must be evaluated separately from convergence.
+
+In live testing, that revision converged to `balanced` for all four workload
+profiles, with approximately two to four drops per second. Because the measured
+performance was already similar across actions, the reward did not support a
+claim that a stricter profile was better. The controller was therefore revised
+as a transparent hybrid policy for the demonstration. High- or medium-priority
+status 1 or 2 now invokes `protected`, while status 3 or 4 invokes
+`maximum_protection`; an all-idle state invokes `balanced`. These are domain
+guardrails, not actions discovered by Q-learning, and results will be labeled
+accordingly.
+
+After the convergence experiment, epsilon was restored to its original fixed
+value of `0.2`. This preserves a consistent exploration rate for states outside
+the explicit guardrails and makes runs easier to compare. The rule-selected
+high- and medium-priority states intentionally bypass epsilon-greedy action
+selection so exploration cannot immediately undo the required protection
+response. The prior decay settings remain commented in the source for possible
+later comparison.
 
 ### Decision interval and experiment duration
 
