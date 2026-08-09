@@ -288,6 +288,3 @@ next steps would be:
 - [Demo video](https://youtu.be/Bngi_mIk_ys) 
 - [MikroTik RouterOS REST API documentation](https://help.mikrotik.com/docs/spaces/ROS/pages/47579162/REST+API)
 - [MikroTik Queue documentation](https://help.mikrotik.com/docs/spaces/ROS/pages/328088/Queues)
-- [iperf3 documentation](https://software.es.net/iperf/)
-- Sutton, R. S., and Barto, A. G. *Reinforcement Learning: An Introduction*,
-  second edition, 2018, [online edition](http://incompleteideas.net/book/the-book-2nd.html).
