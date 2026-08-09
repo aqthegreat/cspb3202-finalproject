@@ -2,348 +2,292 @@
 
 ## Overview
 
-Modern routers typically use static Quality of Service (QoS) policies that are
-configured manually by network administrators. While these policies work well
-for predictable traffic patterns, they cannot automatically adapt to changing
-network conditions. This project investigates whether a reinforcement learning
-(RL) agent can dynamically adjust bandwidth allocation among traffic classes
-marked with Differentiated Services Code Point (DSCP) values.
+This project investigates whether a reinforcement-learning controller can
+dynamically select Quality of Service (QoS) configurations on a MikroTik router.
+Traffic is divided into three classes using Differentiated Services Code Point
+(DSCP) markings. The intended objective is to protect high- and medium-priority
+traffic while preserving as much low-priority throughput as possible when the
+offered load exceeds a 20 Mbps bottleneck.
 
-The RL agent observes network performance metrics such as packet loss, latency,
-and throughput, then selects one of several predefined QoS configurations on a
-MikroTik router. The objective is to minimize packet loss and latency for
-high-priority traffic while maximizing the throughput available to
-lower-priority traffic.
+The completed system reads live Queue Tree rates and cumulative drop counters
+from RouterOS, converts them into a discrete state, selects one of three safe,
+predefined queue profiles, applies the profile through the RouterOS REST API,
+calculates a reward, and updates a tabular Q-learning model. The experiment
+successfully protected priority traffic, but the final controller is a hybrid:
+explicit rules select a protective profile whenever priority traffic is active,
+while Q-learning makes decisions only when the high- and medium-priority queues
+are inactive. This distinction is central to the interpretation of the results.
 
-## Environment
+## Approach and Environment
 
-### Hardware and software
+### Hardware, software, and topology
 
-The experimental environment consists of two traffic computers connected
-through a MikroTik router and a separate Windows laptop that runs the controller
-inside Ubuntu on Windows Subsystem for Linux (WSL). PC1 only generates test
-traffic, and PC2 only receives it. The controller laptop reads measurements and
-changes the router profile but is not a source or destination for experiment
-traffic. The router runs MikroTik RouterOS 7.23.2 and applies the QoS
-configuration selected by the agent.
+Two Xubuntu 26.04 computers generate and receive experiment traffic through a
+MikroTik router running RouterOS 7.23.2. A separate Ubuntu environment in
+Windows Subsystem for Linux (WSL) runs the controller. It communicates with the
+router over the management network and is not in the experiment traffic path.
 
-| Component | Role | Operating system / version |
+| Component | Address | Role |
 | --- | --- | --- |
-| PC1 | Traffic generator | Xubuntu 26.04 |
-| MikroTik router | Routing, traffic classification, and QoS enforcement | RouterOS 7.23.2 |
-| PC2 | Traffic receiver | Xubuntu 26.04 |
-| Controller laptop | Static controller and RL agent | Ubuntu on Windows WSL |
-
-The MikroTik router model and the relevant hardware specifications of the
-traffic computers and controller laptop will be recorded before the experiments
-so that the environment can be reproduced.
-
-### Network topology
+| `nuc34` | `192.168.4.2` | Generates UDP traffic |
+| MikroTik router | management: `192.168.88.34` | Classifies, queues, and forwards traffic |
+| `nuc42` | `192.168.5.2` | Receives UDP traffic |
+| Windows laptop with Ubuntu/WSL | management network | Runs monitoring and the controller |
 
 ```text
-Experiment traffic path:
-
-nuc34: Traffic Generator (192.168.4.2)
-          |
-          v
-MikroTik Router (Management - 192.168.88.34)
-          |
-          v
-nuc42: Traffic Receiver (192.168.5.2)
-
-Management and control path:
-
-Windows WSL/Ubuntu: Controller/RL Agent
-          |
-          | statistics and profile commands
-          v
-MikroTik Router: RouterOS REST API
+nuc34 (sender) -> MikroTik router -> nuc42 (receiver)
+                         ^
+                         |
+                 WSL controller via REST API
 ```
 
-All experiment traffic travels from PC1 to PC2 through the MikroTik router.
-This makes the router the controlled bottleneck and allows its QoS policy to
-determine how available bandwidth is shared among traffic classes. The separate
-controller laptop communicates with the router over its management path and
-does not carry the generated test traffic. The exact link speeds and configured
-bottleneck rate will be documented with the final test configuration.
+All experiment traffic crosses a 20 Mbps Queue Tree parent on router interface
+`ether5`. RouterOS mangle rules classify DSCP 46, 26, and 0 packets into the
+`qos-high`, `qos-medium`, and `qos-low` child queues. The router is therefore
+both the controlled bottleneck and the component that enforces each action.
 
-### Traffic classes
+### Traffic workloads
 
-The generated traffic is divided into three priority classes and marked using
-DSCP values:
+The traffic generator uses three simultaneous `iperf3` UDP streams. UDP was
+chosen because it maintains the requested offered load under congestion, making
+packet loss directly observable. DSCP 46 represents high-priority,
+latency-sensitive traffic; DSCP 26 represents medium-priority interactive
+traffic; and DSCP 0 represents low-priority bulk traffic.
 
-- **High priority (DSCP 46):** voice-like UDP traffic that is sensitive to
-  latency, jitter, and packet loss. The agent should protect this class from
-  degraded service.
-- **Medium priority (DSCP 26):** interactive traffic with intermediate service
-  requirements. It should receive reliable service without displacing the
-  high-priority class.
-- **Low priority (DSCP 0):** bulk UDP traffic generated with `iperf3`. This
-  class can tolerate more delay, and the agent should maximize its usable
-  throughput when doing so does not harm higher-priority traffic.
+The current targets in `scripts/start_iperf3_clients.sh` are:
 
-The precise traffic rates and the tool used for interactive traffic will be
-specified as the workload is finalized.
+| Workload | High, DSCP 46 | Medium, DSCP 26 | Low, DSCP 0 | Total offered |
+| --- | ---: | ---: | ---: | ---: |
+| `open` / profile 0 | 0 | 0 | 20 Mbps | 20 Mbps |
+| `minor` / profile 1 | 0.5 Mbps | 0.5 Mbps | 20 Mbps | 21 Mbps |
+| `moderate` / profile 2 | 1 Mbps | 1 Mbps | 20 Mbps | 22 Mbps |
+| `major` / profile 3 | 2 Mbps | 2 Mbps | 20 Mbps | 24 Mbps |
 
-### Environment operation
+A zero-rate stream is not launched. The current script runs each workload for
+60 seconds. The archived result files used in this report came from earlier
+300-second runs, as shown by their `iperf3` summary intervals. This does not
+change the bandwidth targets or the conclusions, but it is documented so the
+experiment duration is not misrepresented.
 
-At each decision interval, the environment collects performance measurements
-for the traffic classes, including packet loss, latency, and throughput. These
-measurements form the agent's observation. The agent then selects an action
-from a fixed set of predefined QoS configurations, and that configuration is
-applied to the MikroTik router. After the network runs under the selected
-configuration for the next measurement interval, the environment calculates a
-reward and supplies a new observation.
+### Rules of the RL environment
 
-The controller operates continuously through repeated observation, action,
-measurement, and reward steps under a defined traffic scenario. The agent's
-goal is to earn a higher cumulative reward by reducing loss and latency for
-high-priority traffic while retaining as much low-priority throughput as
-possible. The specific rules are defined in the following section.
+The controller repeats an observation-action-reward loop every five seconds:
 
-This describes the intended complete RL environment. The current monitoring
-implementation collects Queue Tree statistics and the `ether5` transmit rate.
-Per-class latency and packet-loss measurements still need to be integrated
-before the full state and reward can be calculated.
+1. Read each child queue's current rate and cumulative drop counter.
+2. Convert the difference from the previous drop reading and the current rate
+   into a discrete state.
+3. Select and apply one predefined queue profile.
+4. Wait five seconds, observe the next state, calculate the reward, and update
+   the Q-table.
 
-## Reinforcement Learning Environment
+The environment runs until stopped by the operator. The first drop reading is
+treated as a baseline. If a RouterOS counter decreases, it is treated as a
+counter reset rather than as a negative number of drops.
 
-The network experiment is modeled as a reinforcement learning environment.
-Although it is not a graphical game, it has the same core elements: a state,
-an available set of actions, a reward, and a transition to the next state.
+#### State
 
-### State
+Each queue receives one status value:
 
-Every five seconds, the agent receives a state containing:
+| Status | Meaning |
+| ---: | --- |
+| 0 | Idle or at most 10 Kbps |
+| 1 | Active with no new drops |
+| 2 | New drops and rate at or below 750 Kbps |
+| 3 | New drops and rate at or below 1.5 Mbps |
+| 4 | New drops and rate above 1.5 Mbps |
 
-- high-priority packet loss;
-- high-priority latency;
-- medium-priority packet loss;
-- medium-priority latency;
-- low-priority throughput; and
-- the currently active queue profile.
+The complete state is `(high_status, medium_status, low_status,
+current_profile)`. The final implementation uses Queue Tree drop deltas as its
+loss signal and queue rates as its throughput signal. It does not measure
+round-trip latency directly, so the final report does not claim that latency
+was part of the learned state or reward.
 
-The performance measurements distinguish the service received by each traffic
-class. The current profile gives the agent context about the QoS policy that
-produced those measurements. State values will be normalized where practical
-so metrics with larger numeric ranges do not dominate the learning process.
+#### Actions
 
-### Actions
+Actions are limited to complete, validated configurations. Each action changes
+only the `limit-at` committed rate of the child queues; the queue structure and
+maximum rates remain unchanged.
 
-At each decision point, the agent selects one QoS profile from a predefined set.
-Each profile represents a complete, valid router configuration with different
-bandwidth-allocation or queue parameters. Restricting the actions to tested
-profiles prevents the agent from applying arbitrary or invalid RouterOS
-settings. Selecting the profile that is already active is allowed and leaves
-the configuration unchanged.
-
-The action space currently contains three profiles. Each action changes the
-`limit-at` value for the three child queues while leaving the Queue Tree
-structure and maximum limits unchanged.
-
-| Profile | `qos-high` | `qos-medium` | `qos-low` |
+| Action | `qos-high` | `qos-medium` | `qos-low` |
 | --- | ---: | ---: | ---: |
-| `balanced` | 1M | 1M | 1M |
-| `protected` | 1250k | 1250k | 250k |
-| `maximum_protection` | 1500k | 1500k | 100k |
+| `balanced` | 1 Mbps | 1 Mbps | 1 Mbps |
+| `protected` | 1.25 Mbps | 1.25 Mbps | 0.25 Mbps |
+| `maximum_protection` | 1.5 Mbps | 1.5 Mbps | 0.1 Mbps |
 
-**NOTE**: The above profiles may change over time to make the changes more obvious.
+This small action space made the experiment safer: the controller could not
+construct an invalid or unreviewed router configuration.
 
-### Reward
+#### Model and action policy
 
-The reward represents the tradeoff between protecting important traffic and
-using the available link capacity efficiently. It will include:
-
-- a positive contribution for high throughput;
-- a positive contribution for low latency;
-- a penalty for packet loss; and
-- a small penalty when the agent changes queue profiles.
-
-The profile-change penalty discourages unnecessary switching and unstable queue
-behavior. The performance terms will be weighted so that high-priority traffic
-receives the strongest protection while throughput for lower-priority traffic
-is still rewarded. The final equation, term weights, measurement units, and
-normalization method will be recorded before training and adjusted only through
-documented experiments. The small penalty when changing is because in testing,
-it was observed that traffic was temporary unlimited, which could be bad.
-
-The current implementation subtracts `0.5` whenever the selected profile is
-different from the profile recorded in the state. This makes a profile change
-worthwhile only when its expected performance improvement offsets the cost of
-reconfiguring the queues. An all-idle interval is handled separately: the agent
-selects `balanced` without exploration and receives a reward of zero, preventing
-idle time from producing misleading positive Q-values.
-
-### Preliminary Q-learning behavior
-
-An initial run containing only DSCP 0 traffic showed that `balanced` became the
-highest-valued action for the frequently observed state
-`(0, 0, 2, "balanced")`, but the controller still occasionally selected
-`protected` or `maximum_protection`. This behavior is consistent with the fixed
-exploration rate rather than evidence that the controller failed to learn.
-
-A Q-value estimates the discounted cumulative reward expected after selecting
-a particular profile in a particular state. It is not a probability or a
-single-interval score. The implementation updates it using
+The model is tabular Q-learning with learning rate `alpha = 0.2`, discount
+factor `gamma = 0.9`, and a fixed exploration rate `epsilon = 0.2`. It uses the
+standard update:
 
 ```text
 Q(s, a) <- Q(s, a) + alpha * (reward + gamma * max Q(s', a') - Q(s, a))
 ```
 
-where `alpha=0.2` and `gamma=0.9`. Consequently, a repeated reward near 10 can
-produce a long-run Q-value approaching `10 / (1 - 0.9) = 100`; observed values
-in the range of 20 to 30 are therefore plausible during learning.
+For states that are not covered by a guardrail, the controller uses an
+epsilon-greedy policy and retains the current action when its Q-value is within
+1.0 of the best action. This stability margin reduces unnecessary switching.
 
-The epsilon-greedy policy uses `epsilon=0.2`. On 80% of non-idle decisions it
-chooses an action having the highest known Q-value, while on 20% it chooses
-uniformly from all three profiles. Even when `balanced` is best, exploration
-therefore has a `0.2 * 2/3`, or approximately 13.3%, chance of selecting a
-different profile. Equal Q-values for previously untried actions can cause
-additional random tie-breaking early in a run. The newly added switching
-penalty addresses unnecessary changes in the learned values; later experiments
-can evaluate whether epsilon should also decay after sufficient exploration.
+The final policy also contains three deterministic guardrails:
 
-Subsequent multi-class tests showed that a fixed epsilon did not permit full
-convergence and that the original state mapped all queues with any new drops to
-the same status. The revised state retains coarse rate information when drops
-occur: status 2 represents up to 750 Kbps, status 3 represents up to 1.5 Mbps,
-and status 4 represents higher rates. This allows the agent to distinguish the
-high- and medium-priority offered loads in the minor, moderate, and major
-traffic profiles.
+- an idle state selects `balanced`;
+- active high- or medium-priority traffic with status 1 or 2 selects
+  `protected`; and
+- high or medium status 3 or 4 selects `maximum_protection`.
 
-The revised controller multiplies epsilon by `0.97` after each active decision
-and sets it to zero once it falls below `0.02`. It also retains the current
-profile when its Q-value is within `1.0` of the best action. Finally, a constant
-20-point offset was added to non-idle rewards. The offset prevents unseen
-actions, whose Q-values begin at zero, from always appearing preferable when
-every observed congestion reward is negative. Together, these changes are
-intended to provide an initial exploration period followed by a stable action;
-their network-performance effect must be evaluated separately from convergence.
+#### Reward
 
-In live testing, that revision converged to `balanced` for all four workload
-profiles, with approximately two to four drops per second. Because the measured
-performance was already similar across actions, the reward did not support a
-claim that a stricter profile was better. The controller was therefore revised
-as a transparent hybrid policy for the demonstration. High- or medium-priority
-status 1 or 2 now invokes `protected`, while status 3 or 4 invokes
-`maximum_protection`; an all-idle state invokes `balanced`. These are domain
-guardrails, not actions discovered by Q-learning, and results will be labeled
-accordingly.
+For a non-idle interval, the reward begins at 25 when high-priority traffic has
+no new drops, or 10 otherwise. It then:
 
-After the convergence experiment, epsilon was restored to its original fixed
-value of `0.2`. This preserves a consistent exploration rate for states outside
-the explicit guardrails and makes runs easier to compare. The rule-selected
-high- and medium-priority states intentionally bypass epsilon-greedy action
-selection so exploration cannot immediately undo the required protection
-response. The prior decay settings remain commented in the source for possible
-later comparison.
+- adds 4 for no medium-priority drops, or subtracts 8 when they occur;
+- adds 2 for each high/medium rate at or above 900 Kbps, with a proportional
+  partial reward below that threshold;
+- adds 1 when low-priority traffic absorbs drops;
+- subtracts 0.5 for `maximum_protection`; and
+- subtracts 0.5 when the selected profile differs from the current profile.
 
-### Decision interval and experiment duration
+An entirely idle interval receives zero reward. The positive baseline was
+added because an earlier reward made every congested action negative, causing
+untried actions initialized at zero to appear artificially superior.
 
-The controller takes a new reading and chooses an action every five seconds.
-Each reading, action, reward, and following reading forms one transition that
-can be used immediately for a Q-learning update. The agent does not need to wait
-for an average over five minutes before making a decision.
+## Implementation and Problem-Solving Process
 
-The network-control task can run continuously and does not require a fixed
-episode length for Q-learning to operate. Controlled experiments may still use
-a fixed duration so static profiles and learning agents can be compared over
-equal traffic workloads. If five-minute runs are used, they will be evaluation
-windows containing 60 separate decisions rather than one averaged observation.
+The system was built in stages. `monitor.py` first established reliable REST
+reads of the Queue Tree and `ether5` transmit rate. `profile_controller.py`
+then added a restricted write path for the three predefined actions.
+`run_controller.py` joined those pieces using a static controller before the
+Q-learning controller was introduced. This isolated router integration errors
+from learning-policy errors.
 
-The controller stops when the operator ends the experiment or when it cannot
-safely continue, such as after a router communication or measurement failure.
-Interrupted runs will be logged and distinguished from completed evaluation
-runs so incomplete data is not treated as a valid comparison.
+One live write test returned HTTP 400 even though reads worked. RouterOS Queue
+Tree resource identifiers begin with `*`; URL-encoding that character as `%2A`
+made the identifier invalid. Leaving the leading `*` literal fixed the update.
+The three queues were then successfully changed to the `balanced` committed
+rates and restored.
 
-## Initial Design Decisions
+The learning algorithm also went through several iterations:
 
-Two foundational design decisions were made before implementation and will
-remain fixed throughout the project.
+1. A fixed epsilon caused continued profile changes after one action had a
+   higher learned value. A 0.5 switching penalty and 1.0 stability margin were
+   added to discourage changes with little expected benefit.
+2. The first state representation encoded every active queue with new drops in
+   the same category. Rate bands were added to distinguish small, moderate, and
+   large active flows when drops occurred.
+3. The first congestion reward was negative for every tried action. Because
+   unseen actions began at zero, they looked preferable. A constant 20-point
+   offset was added to non-idle rewards without changing the relative ordering
+   of outcomes.
+4. A decaying-epsilon experiment converged to `balanced` for every workload,
+   with similar router performance across actions. Since the reward did not
+   establish that stricter profiles were better, I added explicit protection
+   guardrails for the demonstration and restored fixed epsilon to 0.2 for
+   states outside those rules.
 
-### DSCP-based traffic classification
+The last change produced the desired network behavior, but it also changed the
+scientific result: the protective decisions in the final multi-class runs were
+programmed rules rather than a policy learned from experience.
 
-DSCP markings were selected because they provide a standardized mechanism for
-identifying traffic priorities at the network layer. A packet's marking allows
-the router to classify it as high-, medium-, or low-priority traffic without
-requiring the RL agent to identify individual applications or inspect packet
-contents. This keeps the network configuration understandable and makes the
-traffic classes explicit and reproducible across experiments.
+## Experiments and Results
 
-### Predefined QoS profiles
+Four archived 300-second runs applied progressively heavier offered loads. The
+controller began in `balanced`; the sender then launched the selected workload.
+The `iperf3` receiver summaries measure delivered bitrate, jitter, and loss.
+Controller summaries below count each printed five-second decision. A profile
+transition includes returning to `balanced` when traffic ends.
 
-The action space was intentionally limited to a small set of predefined QoS
-profiles. A compact, discrete action space simplifies the learning problem and
-reduces the number of actions the agent must explore. It also prevents the
-agent from constructing arbitrary RouterOS settings: every available action
-corresponds to a configuration that can be reviewed and validated before an
-experiment. This improves operational safety and makes the agent's choices
-easier to interpret when results are analyzed.
+| Workload | High result | Medium result | Low result | Controller behavior |
+| --- | --- | --- | --- | --- |
+| Profile 0: 0/0/20 Mbps | not launched | not launched | 19.4 Mbps, 0.047 ms jitter, 2.8% loss | 76 decisions; 7 transitions; used all three actions |
+| Profile 1: 0.5/0.5/20 Mbps | 0.5 Mbps, 0.025 ms, 0% loss | 0.5 Mbps, 0.015 ms, 0% loss | 18.4 Mbps, 0.063 ms, 7.8% loss | changed to `protected` when traffic began and back to `balanced` when idle |
+| Profile 2: 1/1/20 Mbps | 1.0 Mbps, 0.013 ms, 0% loss | 1.0 Mbps, 0.019 ms, 0% loss | 17.4 Mbps, 0.131 ms, 13% loss | changed to `protected` when traffic began and back to `balanced` when idle |
+| Profile 3: 2/2/20 Mbps | 2.0 Mbps, 0.391 ms, 0% loss | 2.0 Mbps, 0.212 ms, 0.0019% loss | 15.4 Mbps, 0.251 ms, 23% loss | changed to `protected` when traffic began and back to `balanced` when idle |
 
-Keeping both decisions fixed ensures that later experiments evaluate changes
-to the learning method or reward design under a consistent traffic
-classification and action structure.
+The results show the intended QoS outcome clearly. As offered traffic rose from
+20 to 24 Mbps, delivered low-priority throughput fell from 19.4 to 15.4 Mbps
+and its loss rose from 2.8% to 23%. At the same time, the high- and
+medium-priority streams delivered essentially their full offered rates with
+zero loss. The router successfully placed congestion on the low-priority class.
 
-## Implementation and Static Baseline
+The controller behavior requires a more cautious interpretation. In profile 0,
+only DSCP 0 traffic was active, so the deterministic priority guardrails did
+not apply. The controller moved among `balanced`, `protected`, and
+`maximum_protection` several times as epsilon-greedy exploration and learned
+values operated. In profiles 1 through 3, it made one meaningful transition
+from `balanced` to `protected` after priority traffic appeared, held that
+profile throughout the active workload, and returned to `balanced` after the
+traffic ended. This was consistent with the algorithm: status 1 for the active
+high and medium queues explicitly maps to `protected`. However, it was not
+evidence that Q-learning discovered that action, and the multi-class runs did
+not exercise `maximum_protection` because the priority queues did not report
+the drop statuses that trigger it.
 
-The initial measurement-and-control path was implemented before adding a
-learning agent. This separates RouterOS integration problems from later RL
-design and provides a simple baseline for comparison.
+The rising Q-values in the logs are not probabilities. With `gamma = 0.9`, a
+repeated reward near 30 has a theoretical continuing-return scale near
+`30 / (1 - 0.9) = 300`, so Q-values above 200 in these runs are reasonable.
 
-### Router and traffic configuration
+## Discussion and Reflection
 
-The router currently uses a 20 Mbps parent queue on `ether5` with three child
-queues named `qos-high`, `qos-medium`, and `qos-low`. RouterOS mangle rules
-classify packets marked with DSCP 46, 26, and 0 into the high-, medium-, and
-low-priority queues. Traffic-generation scripts start `iperf3` servers and
-clients for repeatable testing of the three classes.
+I am not satisfied with the final controller even though I am satisfied with
+the network performance. I can see that it reads real router statistics,
+calculates states and rewards, and updates Q-values, but its decisions are not
+the kind of adaptive learned behavior I originally wanted. I had never used
+RouterOS Queue Tree QoS before this project and underestimated how much work the
+router would already do once its queue hierarchy, priorities, and committed
+rates were configured correctly. The router did most of the useful traffic
+protection, leaving the Q-learning controller with little measurable advantage
+to discover among the three actions.
 
-### Monitoring
+The final guardrails made the demonstration stable, but they also meant that
+the controller did not make most multi-class decisions through Q-learning. The
+profile 0 log is evidence that the learning path was active, while profiles
+1–3 are primarily evidence that the rule-selected profile and RouterOS queues
+performed well. Based on the implemented algorithm, those decisions were not
+wrong; they simply do not demonstrate the degree of learned control I intended.
 
-`monitor.py` connects to the RouterOS REST API and retrieves Queue Tree data for
-the parent and three child queues. It displays current rate, packets, bytes,
-drops, queued traffic, committed rate, and maximum rate. It also retrieves the
-transmit rate for `ether5`. The display refreshes once per second when the
-monitor is run by itself.
+There are also experimental limitations. The final state and reward use router
+queue rates and drop deltas, not direct latency measurements. The result set
+does not include equal-workload static runs for all three queue actions, so it
+cannot establish that the hybrid controller outperformed a well-chosen static
+profile. Each workload was represented by one archived run, which is enough to
+demonstrate the mechanism but not enough for statistical confidence.
 
-This monitoring is sufficient to verify queue classification, traffic rates,
-and profile changes. It does not yet provide all values planned for the RL
-state, particularly per-class latency and packet loss.
+## Conclusion and Future Work
 
-### Profile control
+The project produced a working end-to-end system and achieved its operational
+QoS goal: priority UDP traffic retained almost all offered throughput and
+nearly zero loss while the low-priority stream absorbed increasing congestion.
+It did not establish that Q-learning was responsible for that result. My main
+conclusion is that a strong built-in queueing policy can reduce both the need
+for and the learning signal available to an external RL controller.
 
-`profile_controller.py` provides `set_profile()`, which accepts one of the three
-predefined profile names. It first verifies that all required queues exist and
-then updates their `limit-at` values through the RouterOS REST API. Restricting
-the function to predefined profiles prevents the controller from generating
-arbitrary Queue Tree settings.
+More tuning and a stronger evaluation design are required, but I have run out
+of time to complete them while meeting the project deadline. The most useful
+next steps would be:
 
-Live testing initially produced an HTTP 400 response even though reading the
-queue configuration worked. The failure was traced to URL-encoding the leading
-`*` in RouterOS resource identifiers. For example, RouterOS accepted
-`*1000002` in the REST path but rejected `%2A1000002` as an invalid resource
-identifier. Keeping the identifier literal fixed the update request.
+- remove the deterministic guardrails and train across many randomized traffic
+  episodes with epsilon decay and a persisted Q-table;
+- compare every learned policy against static `balanced`, `protected`, and
+  `maximum_protection` baselines under identical workloads;
+- add active latency or round-trip-time measurements to the state and reward;
+- create actions that materially change scheduling behavior, not only
+  `limit-at`, so actions produce a clearer measurable learning signal;
+- repeat each experiment and report means, variation, convergence, cumulative
+  reward, and switching rate; and
+- separate training from evaluation so evaluation runs use no exploration.
 
-The `balanced` profile was applied during validation, and all three queues
-reported a committed rate of 1 Mbps. Their original values were then restored
-successfully.
+## Deliverables and References
 
-### Static controller
-
-`run_controller.py` integrates monitoring and profile control. Its
-`StaticController` always returns the profile selected when the program starts;
-it does not inspect the statistics when choosing an action. Every five seconds,
-the runner retrieves current statistics, obtains the fixed profile from the
-controller, applies it, and prints the selected profile and current traffic
-rates.
-
-The static controller was tested against the router and successfully collected
-statistics while applying the configured profile every five seconds. This
-confirms that the observation, action-selection, and RouterOS control path can
-operate together before Q-learning is introduced.
-
-The same static controller will serve as a baseline during experiments. Its
-performance under each fixed profile can be compared with the Q-learning
-agent's performance under identical traffic scenarios. This will show whether
-dynamic profile selection improves results beyond simply choosing one fixed
-configuration.
+- [Project source repository](https://github.com/aqthegreat/cspb3202-finalproject)
+- [Project notebook](NOTEBOOK.md)
+- [Traffic-generation scripts](scripts/start_iperf3_clients.sh)
+- [Raw experiment results](results/)
+- [Demo video](https://youtu.be/Bngi_mIk_ys) 
+- [MikroTik RouterOS REST API documentation](https://help.mikrotik.com/docs/spaces/ROS/pages/47579162/REST+API)
+- [MikroTik Queue documentation](https://help.mikrotik.com/docs/spaces/ROS/pages/328088/Queues)
+- [iperf3 documentation](https://software.es.net/iperf/)
+- Sutton, R. S., and Barto, A. G. *Reinforcement Learning: An Introduction*,
+  second edition, 2018, [online edition](http://incompleteideas.net/book/the-book-2nd.html).
